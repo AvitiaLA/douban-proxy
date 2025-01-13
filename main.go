@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -12,6 +13,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -53,7 +55,61 @@ var (
 	blacklistPath  string
 	bandwidthLimit int
 	denyWebPage    bool
+	requestLimit   int
 )
+
+type AccessRecord struct {
+	count int
+}
+
+type IPLimiter struct {
+	records map[string]*AccessRecord
+	limit   int
+
+	sync.RWMutex
+}
+
+func NewIPLimiter() *IPLimiter {
+	return &IPLimiter{
+		records: make(map[string]*AccessRecord),
+	}
+}
+
+func (ir *IPLimiter) GetAccess(address string) bool {
+	ir.RLock()
+	record, exist := ir.records[address]
+	ir.RUnlock()
+	if exist {
+		if record.count < ir.limit {
+			record.count = record.count + 1
+			return true
+		} else {
+			return false
+		}
+	} else {
+		ir.Lock()
+		ir.records[address] = &AccessRecord{1}
+		ir.Unlock()
+		return true
+	}
+}
+
+func (ir *IPLimiter) Leave(address string) {
+	ir.RLock()
+	record, exist := ir.records[address]
+	ir.RUnlock()
+	if exist {
+		if record.count == 1 {
+			ir.Lock()
+			delete(ir.records, address)
+			ir.Unlock()
+		} else {
+			record.count = record.count - 1
+		}
+	}
+}
+
+var RequestLimiter *IPLimiter
 
 var BandwidthLimiter *R.Bucket
 
@@ -82,6 +138,7 @@ func init() {
 	command.PersistentFlags().StringVarP(&domainListPath, "domain-list-path", "d", "domainlist.txt", "set accept domain")
 	command.PersistentFlags().StringVarP(&blacklistPath, "blacklist-path", "b", "blacklist.txt", "set repository blacklist")
 	command.PersistentFlags().IntVarP(&bandwidthLimit, "bandwidth-limit", "l", 0, "set total bandwidth limit (MB/s), 0 as no limit")
+	command.PersistentFlags().IntVarP(&requestLimit, "request-limit", "r", 0, "set request limit by ip, 0 as no limit")
 	command.PersistentFlags().BoolVarP(&denyWebPage, "deny-web-page", "", false, "deny web page requests")
 }
 
@@ -111,6 +168,10 @@ func run(*cobra.Command, []string) {
 	if bandwidthLimit > 0 {
 		BandwidthLimiter = R.NewBucketWithRate(float64(bandwidthLimit*1024*1024), int64(bandwidthLimit*1024*1024))
 		log.Info("Bandwidth limit is set as ", bandwidthLimit, "MB/s")
+	}
+	if requestLimit > 0 {
+		log.Info("Request limit is set as ", requestLimit, " each IP")
+		RequestLimiter = NewIPLimiter()
 	}
 	if denyWebPage {
 		log.Info("Denying web page requests")
@@ -142,6 +203,7 @@ func run(*cobra.Command, []string) {
 		r.Use(middleware.RealIP)
 		r.Use(setContext)
 		r.Use(commonLog)
+		r.Use(requestLimitHandle)
 		r.Get("/", hello)
 		r.Mount("/", finalHandle())
 	})
@@ -382,6 +444,29 @@ func commonLog(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		log.InfoContext(r.Context(), "New ", r.Method, " request from ", r.RemoteAddr, " to ", r.URL.RequestURI())
 		next.ServeHTTP(w, r)
+	})
+}
+
+func requestLimitHandle(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if RequestLimiter == nil {
+			next.ServeHTTP(w, r)
+			return
+		}
+		ip := M.ParseSocksaddr(r.RemoteAddr).Addr.String()
+		access := RequestLimiter.GetAccess(ip)
+		if !access {
+			log.WarnContext(r.Context(), "Match request limit")
+			w.WriteHeader(http.StatusTooManyRequests)
+			if requestLimit == 1 {
+				w.Write([]byte("You can only initiate 1 request at the same time"))
+			} else {
+				w.Write([]byte(fmt.Sprint("You can only initiate ", requestLimit, " requests at the same time")))
+			}
+			return
+		}
+		next.ServeHTTP(w, r)
+		RequestLimiter.Leave(ip)
 	})
 }
 
