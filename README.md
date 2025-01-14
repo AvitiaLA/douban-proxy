@@ -77,6 +77,16 @@ Accept requests whose url host is in the list.
 - `codeload.github.com`
 - `api.github.com`
 
-## Notes
+## Q&A
 
-- use `nginx` to add upgrade request to H2/H3
+### Commit message cannot load
+
+Cause the policy set by Github, you can only fetch it over TLS.
+
+### Release assets cannot load
+
+Cause the CORS policy set by Github, requests will be blocked by browser.
+
+### Nginx 502
+
+Cause response headers given by Github is too large, try to enlarge `proxy_buffer_size`
