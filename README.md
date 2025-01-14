@@ -13,10 +13,12 @@ Usage:
 Flags:
   -l, --bandwidth-limit int       set total bandwidth limit (MB/s), 0 as no limit
   -b, --blacklist-path string     set repository blacklist (default "blacklist.txt")
+  -c, --cert-path string          set tls cert path (default "cert.pem")
       --deny-web-page             deny web page requests
       --disable-color             disable color output
   -d, --domain-list-path string   set accept domain (default "domainlist.txt")
   -h, --help                      help for git-proxy
+  -k, --key-path string           set tls key path (default "key.pem")
   -r, --request-limit int         set request limit by ip, 0 as no limit
   -p, --running-port int          disable color output (default 30000)
 ```

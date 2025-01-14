@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"crypto/tls"
 	"fmt"
 	"io"
 	"net"
@@ -56,6 +57,8 @@ var (
 	bandwidthLimit int
 	denyWebPage    bool
 	requestLimit   int
+	certPath       string
+	keyPath        string
 )
 
 type AccessRecord struct {
@@ -126,6 +129,85 @@ var AcceptDomain = []string{
 	"api.github.com",
 }
 
+type CertContainer struct {
+	CertPEM     []byte
+	KeyPEM      []byte
+	CertWatcher *fswatch.Watcher
+	KeyWatcher  *fswatch.Watcher
+	Cert        tls.Certificate
+}
+
+func NewCertContainer() (*CertContainer, error) {
+	CertPEM, err := os.ReadFile(certPath)
+	if err != nil {
+		return nil, E.Cause(err, "Read cert file")
+	}
+	KeyPEM, err := os.ReadFile(keyPath)
+	if err != nil {
+		return nil, E.Cause(err, "Read key file")
+	}
+	Cert, err := tls.X509KeyPair(CertPEM, KeyPEM)
+	if err != nil {
+		return nil, E.Cause(err, "Check key pair")
+	}
+	container := &CertContainer{
+		CertPEM: CertPEM,
+		KeyPEM:  KeyPEM,
+		Cert:    Cert,
+	}
+	if CertWatcher, err := fswatch.NewWatcher(fswatch.Options{
+		Path: []string{certPath},
+		Callback: func(path string) {
+			var err error
+			CertPEM, err = os.ReadFile(certPath)
+			if err != nil {
+				return
+			}
+			container.CertPEM = CertPEM
+			container.Update()
+		},
+	}); err == nil {
+		err = CertWatcher.Start()
+		if err == nil {
+			container.CertWatcher = CertWatcher
+		}
+	}
+	if KeyWatcher, err := fswatch.NewWatcher(fswatch.Options{
+		Path: []string{keyPath},
+		Callback: func(path string) {
+			var err error
+			KeyPEM, err = os.ReadFile(keyPath)
+			if err == nil {
+				return
+			}
+			container.KeyPEM = KeyPEM
+			container.Update()
+		},
+	}); err == nil {
+		err = KeyWatcher.Start()
+		if err == nil {
+			container.KeyWatcher = KeyWatcher
+		}
+	}
+	return container, nil
+}
+
+func (c *CertContainer) Update() {
+	Cert, err := tls.X509KeyPair(c.CertPEM, c.KeyPEM)
+	if err == nil {
+		c.Cert = Cert
+	}
+}
+
+func (c *CertContainer) Close() {
+	if c.CertWatcher != nil {
+		c.CertWatcher.Close()
+	}
+	if c.KeyWatcher != nil {
+		c.KeyWatcher.Close()
+	}
+}
+
 var command = &cobra.Command{
 	Use:   "git-proxy",
 	Short: "A HTTP service to proxy git requests",
@@ -140,6 +222,8 @@ func init() {
 	command.PersistentFlags().IntVarP(&bandwidthLimit, "bandwidth-limit", "l", 0, "set total bandwidth limit (MB/s), 0 as no limit")
 	command.PersistentFlags().IntVarP(&requestLimit, "request-limit", "r", 0, "set request limit by ip, 0 as no limit")
 	command.PersistentFlags().BoolVarP(&denyWebPage, "deny-web-page", "", false, "deny web page requests")
+	command.PersistentFlags().StringVarP(&certPath, "cert-path", "c", "cert.pem", "set tls cert path")
+	command.PersistentFlags().StringVarP(&keyPath, "key-path", "k", "key.pem", "set tls key path")
 }
 
 func main() {
@@ -198,6 +282,21 @@ func run(*cobra.Command, []string) {
 	}
 	listen := M.ParseSocksaddr(":" + strconv.Itoa(runningPort))
 	listener := listenTCP(listen)
+	if len(certPath) == 0 || len(keyPath) == 0 {
+		log.Info("Listening TCP port ", listen.Port)
+	} else if container, err := NewCertContainer(); err != nil {
+		log.Warn(E.Cause(err, "Update TCP to TLS"))
+		log.Info("Listening TCP port ", listen.Port)
+	} else {
+		log.Info("Listening TLS port ", listen.Port)
+		listener = tls.NewListener(listener, &tls.Config{
+			NextProtos: []string{"h2", "http/1.1"},
+			GetCertificate: func(info *tls.ClientHelloInfo) (*tls.Certificate, error) {
+				return &container.Cert, nil
+			},
+		})
+		defer container.Close()
+	}
 	chiRouter := chi.NewRouter()
 	chiRouter.Group(func(r chi.Router) {
 		r.Use(middleware.RealIP)
@@ -425,7 +524,6 @@ func listenTCP(address M.Socksaddr) net.Listener {
 		}
 		address.Port = address.Port + 1
 	}
-	log.Info("Listening tcp port ", address.Port)
 	return listener
 }
 
