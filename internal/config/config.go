@@ -1,6 +1,11 @@
 package config
 
 import (
+	"fmt"
+	"os"
+
+	"douban-proxy/internal/version"
+
 	"github.com/spf13/cobra"
 )
 
@@ -54,6 +59,18 @@ var Global = DefaultConfig()
 
 // InitFlags 初始化命令行参数
 func InitFlags(cmd *cobra.Command) {
+	// 版本信息标志
+	var showVersion bool
+	cmd.Flags().BoolVarP(&showVersion, "version", "v", false, "显示版本信息")
+
+	// 处理版本信息
+	cmd.PreRun = func(cmd *cobra.Command, args []string) {
+		if showVersion {
+			fmt.Println(version.Info())
+			os.Exit(0)
+		}
+	}
+
 	cmd.PersistentFlags().BoolVarP(&Global.DisableColor, "disable-color", "", false, "禁用彩色输出")
 	cmd.PersistentFlags().IntVarP(&Global.RunningPort, "running-port", "p", 30000, "代理服务器端口")
 	cmd.PersistentFlags().StringVarP(&Global.DomainListPath, "domain-list-path", "d", "domainlist.txt", "设置接受的域名列表")
