@@ -334,11 +334,6 @@ func sendRequestWithURL(w http.ResponseWriter, r *http.Request, URL *url.URL) {
 	}
 	defer response.Body.Close()
 
-	if response.StatusCode == http.StatusOK && config.Global.DenyWebPage && strings.Contains(strings.ToLower(response.Header.Get("Content-Type")), "text/html") {
-		responseWithError(w, r, E.New("Refuse to serve web page"))
-		return
-	}
-
 	// 智能缓存策略：只缓存小于10MB的响应
 	const maxCacheSize = 10 * 1024 * 1024 // 10MB
 	var responseBody []byte

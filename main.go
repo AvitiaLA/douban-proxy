@@ -14,6 +14,7 @@ import (
 	"douban-proxy/internal/handler"
 	"douban-proxy/internal/middleware"
 	"douban-proxy/internal/proxy"
+	"douban-proxy/internal/service"
 
 	"github.com/go-chi/chi/v5"
 	chimiddleware "github.com/go-chi/chi/v5/middleware"
@@ -35,18 +36,24 @@ var log = L.NewDefaultFactory(
 	false,
 ).Logger()
 
-var command = &cobra.Command{
+var rootCommand = &cobra.Command{
 	Use:   "douban-proxy",
 	Short: "一个用于代理豆瓣请求的HTTP服务",
 	Run:   run,
 }
 
 func init() {
-	config.InitFlags(command)
+	config.InitFlags(rootCommand)
+
+	// 设置服务包的日志器
+	service.SetLogger(log)
+
+	// 添加服务命令
+	rootCommand.AddCommand(service.GetServiceCommand())
 }
 
 func main() {
-	if err := command.Execute(); err != nil {
+	if err := rootCommand.Execute(); err != nil {
 		log.Fatal(err)
 	}
 }

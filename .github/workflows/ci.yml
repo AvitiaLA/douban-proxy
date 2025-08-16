@@ -44,7 +44,7 @@ jobs:
           fi
           
           go build \
-            -ldflags "-s -w -X 'douban-proxy/internal/version.Version=${{ steps.build-info.outputs.version }}' -X 'douban-proxy/internal/version.GitCommit=${{ steps.build-info.outputs.commit-hash }}' -X 'douban-proxy/internal/version.BuildTime=${{ steps.build-info.outputs.build-time }}'" \
+            -ldflags "-s -w -X 'douban-proxy/internal/version.GitCommit=${{ steps.build-info.outputs.commit-hash }}' -X 'douban-proxy/internal/version.BuildTime=${{ steps.build-info.outputs.build-time }}'" \
             -o "douban-proxy-${{ matrix.output }}${SUFFIX}" \
             main.go
 

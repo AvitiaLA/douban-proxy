@@ -7,8 +7,6 @@ import (
 )
 
 var (
-	// 这些变量在构建时通过ldflags设置
-	Version   = "dev"
 	GitCommit = "unknown"
 	BuildTime = "unknown"
 	GoVersion = runtime.Version()
@@ -28,7 +26,6 @@ func Info() string {
 	}
 
 	return fmt.Sprintf("douban-proxy %s %s %s %s with %s %s",
-		Version,
 		GitCommit,
 		runtime.GOOS,
 		runtime.GOARCH,
