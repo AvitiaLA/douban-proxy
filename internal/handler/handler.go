@@ -153,8 +153,6 @@ func Final(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		decodedURI = rawURI
 		log.DebugContext(ctx, "Decode failed, raw URI: ", rawURI)
-	} else if decodedURI != rawURI {
-		log.DebugContext(ctx, "Decoded URI: ", rawURI, " -> ", decodedURI)
 	}
 
 	requestURIURL, err := url.Parse(decodedURI)
@@ -248,7 +246,10 @@ func sendRequestWithURL(w http.ResponseWriter, r *http.Request, URL *url.URL) {
 		if cacheItem, found := cacheManager.Get(cacheKey); found {
 			stats.Global.IncCacheHit() // 统计缓存命中
 			sizeKB := float64(len(cacheItem.Body)) / 1024
-			log.DebugContext(ctx, "Cache HIT: ", URL, " | ", fmt.Sprintf("%.1fKB", sizeKB))
+			requests, hits, _, _, hitRate := stats.Global.GetStats()
+			// 获取当前缓存状态
+			cacheCount, currentCacheSize, _ := cacheManager.GetStats()
+			log.DebugContext(ctx, "Cache HIT: ", URL, " | ", fmt.Sprintf("%.1fKB", sizeKB), " | Stats: ", requests, " reqs, ", hits, " hits (", fmt.Sprintf("%.1f%%", hitRate), ") | Cache: ", cacheCount, " items, ", fmt.Sprintf("%.1fMB", float64(currentCacheSize)/(1024*1024)))
 
 			// 设置响应头（从缓存中恢复）
 			for key, values := range cacheItem.Headers {
@@ -272,7 +273,10 @@ func sendRequestWithURL(w http.ResponseWriter, r *http.Request, URL *url.URL) {
 		}
 
 		stats.Global.IncCacheMiss() // 统计缓存未命中
-		log.DebugContext(ctx, "Cache MISS: ", URL)
+		requests, hits, _, _, hitRate := stats.Global.GetStats()
+		// 获取当前缓存状态
+		cacheCount, currentCacheSize, _ := cacheManager.GetStats()
+		log.DebugContext(ctx, "Cache MISS: ", URL, " | Stats: ", requests, " reqs, ", hits, " hits (", fmt.Sprintf("%.1f%%", hitRate), ") | Cache: ", cacheCount, " items, ", fmt.Sprintf("%.1fMB", float64(currentCacheSize)/(1024*1024)))
 	}
 
 	request, err := http.NewRequest(r.Method, URL.String(), r.Body)
@@ -461,10 +465,4 @@ func sendRequestWithURL(w http.ResponseWriter, r *http.Request, URL *url.URL) {
 	}
 
 	log.DebugContext(ctx, "Proxy OK: ", URL, ", method: ", request.Method, ", status: ", response.StatusCode)
-
-	// 定期输出性能统计信息
-	requests, hits, _, dataSize, hitRate := stats.Global.GetStats()
-	if requests%100 == 0 { // 每100个请求输出一次
-		log.InfoContext(ctx, "Stats: ", requests, " reqs, ", hits, " hits (", fmt.Sprintf("%.1f%%", hitRate), "), ", dataSize/(1024*1024), "MB")
-	}
 }
