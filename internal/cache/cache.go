@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/jellydator/ttlcache/v3"
+	L "github.com/sagernet/sing-box/log"
 )
 
 // 内存池 - 减少GC压力
@@ -33,6 +34,14 @@ var (
 	}
 )
 
+// CacheType 缓存类型
+type CacheType int
+
+const (
+	CacheTypeImage CacheType = iota // 图片缓存
+	CacheTypeOther                  // 其他缓存
+)
+
 // Item 缓存条目
 type Item struct {
 	StatusCode   int
@@ -42,6 +51,7 @@ type Item struct {
 	LastAccessed time.Time // 最后访问时间
 	AccessCount  int       // 访问次数
 	Size         int64
+	CacheType    CacheType // 缓存类型
 }
 
 // Manager 缓存管理器
@@ -51,19 +61,23 @@ type Manager struct {
 	maxSize     int64
 	mutex       sync.RWMutex
 	// 维护一个按热门度排序的优先队列，避免每次都要全量计算
-	lowScoreKeys []string // 保存低分数的key，用于快速淘汰
+	lowScoreKeys []string      // 保存低分数的key，用于快速淘汰
+	logger       L.Logger      // 日志记录器
+	stopChan     chan struct{} // 停止信号
 }
 
 // NewManager 创建新的缓存管理器
-func NewManager(maxSizeMB int64, defaultExpiration time.Duration) *Manager {
+func NewManager(maxSizeMB int64, defaultExpiration time.Duration, logger L.Logger, cleanupHours int) *Manager {
 	cache := ttlcache.New[string, *Item](
 		// 不设置条目数量限制，只基于大小
 		ttlcache.WithDisableTouchOnHit[string, *Item](), // 禁用访问时更新，让LRU更纯粹
 	)
 
 	cm := &Manager{
-		cache:   cache,
-		maxSize: maxSizeMB * 1024 * 1024, // 转换为字节
+		cache:    cache,
+		maxSize:  maxSizeMB * 1024 * 1024, // 转换为字节
+		logger:   logger,
+		stopChan: make(chan struct{}),
 	}
 
 	// 设置淘汰回调来跟踪缓存大小
@@ -81,6 +95,9 @@ func NewManager(maxSizeMB int64, defaultExpiration time.Duration) *Manager {
 
 	// 启动自动清理（用于处理容量淘汰）
 	go cache.Start()
+
+	// 启动定期清理非图片缓存的协程
+	go cm.startPeriodicCleanup(cleanupHours)
 
 	return cm
 }
@@ -256,6 +273,7 @@ func (cm *Manager) GetStats() (count int, currentSize, maxSize int64) {
 
 // Stop 停止缓存管理器
 func (cm *Manager) Stop() {
+	close(cm.stopChan) // 停止定期清理协程
 	cm.cache.Stop()
 }
 
@@ -383,6 +401,7 @@ func (cm *Manager) LoadFromFile(filename string, loadPercent int) error {
 	loadedSize := int64(0)
 	maxLoadSize := cm.maxSize * int64(loadPercent) / 100 // 根据配置加载指定百分比的容量
 
+	var imageCount, otherCount int
 	for _, entry := range entries {
 		if cm.currentSize+entry.Item.Size > maxLoadSize {
 			break // 达到加载限制，停止加载
@@ -392,12 +411,122 @@ func (cm *Manager) LoadFromFile(filename string, loadPercent int) error {
 		cm.currentSize += entry.Item.Size
 		loadedCount++
 		loadedSize += entry.Item.Size
+
+		// 统计加载的缓存类型
+		if entry.Item.CacheType == CacheTypeImage {
+			imageCount++
+		} else {
+			otherCount++
+		}
 	}
 
+	cm.logger.Debug(fmt.Sprintf("缓存加载完成: 总计 %d 项 (图片: %d, 其他: %d), 大小: %.2f MB",
+		loadedCount, imageCount, otherCount, float64(loadedSize)/(1024*1024)))
+
 	return nil
+}
+
+// CleanupAfterLoad 在缓存加载完成后执行清理
+func (cm *Manager) CleanupAfterLoad() {
+	if cm == nil {
+		return
+	}
+	go func() {
+		cm.logger.Debug("启动时执行初始缓存清理...")
+		cm.cleanupNonImageCache()
+	}()
 }
 
 // NewItem 从内存池创建新的缓存项
 func NewItem() *Item {
 	return itemPool.Get().(*Item)
+}
+
+// 可长期缓存的MIME类型
+var longTermCacheTypes = map[string]bool{
+	"image/": true,
+}
+
+// DetectCacheType 根据HTTP头部检测缓存类型
+func DetectCacheType(headers http.Header) CacheType {
+	contentType := headers.Get("Content-Type")
+	if contentType == "" {
+		return CacheTypeOther
+	}
+
+	// 检查是否为长期缓存类型
+	for prefix := range longTermCacheTypes {
+		if strings.HasPrefix(contentType, prefix) {
+			return CacheTypeImage // 复用现有枚举值表示长期缓存
+		}
+	}
+
+	return CacheTypeOther
+}
+
+// String 返回缓存类型的字符串表示
+func (ct CacheType) String() string {
+	switch ct {
+	case CacheTypeImage:
+		return "LongTerm"
+	case CacheTypeOther:
+		return "ShortTerm"
+	default:
+		return "Unknown"
+	}
+}
+
+// startPeriodicCleanup 启动定期清理非图片缓存的协程
+func (cm *Manager) startPeriodicCleanup(cleanupHours int) {
+	if cleanupHours <= 0 {
+		cm.logger.Debug("缓存清理间隔无效，跳过定期清理")
+		return
+	}
+
+	ticker := time.NewTicker(time.Duration(cleanupHours) * time.Hour)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			cm.cleanupNonImageCache()
+		case <-cm.stopChan:
+			return
+		}
+	}
+}
+
+// cleanupNonImageCache 清理非图片缓存
+func (cm *Manager) cleanupNonImageCache() {
+	cm.mutex.Lock()
+	defer cm.mutex.Unlock()
+
+	items := cm.cache.Items()
+	if len(items) == 0 {
+		cm.logger.Debug("定期清理非图片缓存: 缓存为空")
+		return
+	}
+
+	var cleanupCount int
+	var cleanupSize int64
+
+	// 直接遍历删除，避免额外的slice分配
+	for key, item := range items {
+		if item.Value().CacheType == CacheTypeOther {
+			cleanupSize += item.Value().Size
+			cm.currentSize -= item.Value().Size
+			cm.cache.Delete(key)
+			cleanupCount++
+		}
+	}
+
+	// 记录清理日志
+	if cleanupCount > 0 {
+		cm.logger.Info(fmt.Sprintf("定期清理非图片缓存: 清理了 %d 个条目, 释放了 %.2f MB 空间",
+			cleanupCount, float64(cleanupSize)/(1024*1024)))
+		// 清理lowScoreKeys缓存以确保一致性
+		cm.lowScoreKeys = nil
+	} else {
+		cm.logger.Debug("定期清理非图片缓存: 无需清理的条目")
+	}
 }

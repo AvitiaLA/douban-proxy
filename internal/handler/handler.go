@@ -80,13 +80,16 @@ func InitHTTPClient() {
 // InitCache 初始化缓存
 func InitCache() {
 	if config.Global.EnableCache {
-		cacheManager = cache.NewManager(config.Global.CacheMaxSize, 0)
-		log.Debug("Cache enabled: ", config.Global.CacheMaxSize, "MB")
+		cacheManager = cache.NewManager(config.Global.CacheMaxSize, 0, log, config.Global.CacheCleanupHours)
+		log.Debug("Cache enabled: ", config.Global.CacheMaxSize, "MB, cleanup interval: ", config.Global.CacheCleanupHours, "h")
 
 		// 尝试从文件加载缓存
 		if err := cacheManager.LoadFromFile(config.Global.CacheFile, config.Global.CacheLoadPercent); err != nil {
 			log.Debug("Cache load failed: ", err)
 		}
+
+		// 加载完成后执行初始清理
+		cacheManager.CleanupAfterLoad()
 	}
 }
 
@@ -426,6 +429,9 @@ func sendRequestWithURL(w http.ResponseWriter, r *http.Request, URL *url.URL) {
 
 	// 写入响应体
 	if cacheManager != nil && shouldCache && responseBody != nil {
+		// 检测缓存类型
+		cacheType := cache.DetectCacheType(response.Header)
+
 		// 使用内存池创建缓存响应条目
 		cacheItem := cache.NewItem()
 		*cacheItem = cache.Item{
@@ -436,12 +442,13 @@ func sendRequestWithURL(w http.ResponseWriter, r *http.Request, URL *url.URL) {
 			LastAccessed: time.Now(),
 			AccessCount:  1, // 首次创建时访问计数为1
 			Size:         int64(len(responseBody)),
+			CacheType:    cacheType, // 设置缓存类型
 		}
 		cacheManager.Set(cacheKey, cacheItem)
 		stats.Global.AddDataSize(int64(len(responseBody))) // 统计数据大小
 
 		sizeKB := float64(len(responseBody)) / 1024
-		log.DebugContext(ctx, "Cache STORED: ", URL, " | Size: ", fmt.Sprintf("%.1fKB", sizeKB), " | Key: ", cacheKey[:8], "...")
+		log.DebugContext(ctx, "Cache STORED: ", URL, " | Type: ", cacheType.String(), " | Size: ", fmt.Sprintf("%.1fKB", sizeKB), " | Key: ", cacheKey[:8], "...")
 
 		if bandwidthLimiter != nil {
 			io.Copy(w, NewLimitReader(bytes.NewReader(responseBody), bandwidthLimiter))

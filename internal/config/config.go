@@ -25,9 +25,10 @@ type Config struct {
 	RequestLimit   int
 
 	// 缓存配置
-	CacheMaxSize     int64
-	CacheFile        string
-	CacheLoadPercent int
+	CacheMaxSize      int64
+	CacheFile         string
+	CacheLoadPercent  int
+	CacheCleanupHours int // 非长期缓存的清理间隔（小时）
 
 	// 域名配置
 	DomainListPath string
@@ -47,6 +48,7 @@ func DefaultConfig() *Config {
 		CacheMaxSize:      100,
 		CacheFile:         "cache.gob",
 		CacheLoadPercent:  80,
+		CacheCleanupHours: 12, // 默认12小时清理一次
 		DomainListPath:    "domainlist.txt",
 		FaviconDomain:     "www.douban.com",
 	}
@@ -81,4 +83,5 @@ func InitFlags(cmd *cobra.Command) {
 	cmd.PersistentFlags().StringVarP(&Global.FaviconDomain, "favicon-domain", "", "www.douban.com", "favicon请求的域名")
 	cmd.PersistentFlags().StringVarP(&Global.CacheFile, "cache-file", "", "cache.gob", "缓存持久化文件路径")
 	cmd.PersistentFlags().IntVarP(&Global.CacheLoadPercent, "cache-load-percent", "", 80, "启动时加载缓存的百分比")
+	cmd.PersistentFlags().IntVarP(&Global.CacheCleanupHours, "cache-cleanup-hours", "", 12, "非长期缓存的清理间隔（小时）")
 }
