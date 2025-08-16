@@ -12,5 +12,4 @@
 /venv/
 domainlist.txt
 blacklist.txt
-cert.pem
-key.pem
+cache.gob

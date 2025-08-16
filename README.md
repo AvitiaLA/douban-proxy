@@ -1,92 +1,61 @@
-# git-proxy
+# 豆瓣代理服务器
 
-A GitHub HTTP proxy server written by go.
+一个用 Go 编写的高性能豆瓣 HTTP 代理服务器，支持智能缓存和跨域访问。
 
-## Usage
+## 核心特性
 
-### Start
+- **智能缓存**：基于热门度的 LRU 缓存，支持持久化
+- **跨域支持**：自动处理 CORS 头部和预检请求
+- **通配符域名**：支持 `*.douban.com` 和 `*.doubanio.com`
+- **模块化设计**：配置管理、缓存、处理器、中间件分离
 
-```shell
-Usage:
-  git-proxy [flags]
+## 快速使用
 
-Flags:
-  -l, --bandwidth-limit int       set total bandwidth limit (MB/s), 0 as no limit
-  -b, --blacklist-path string     set repository blacklist (default "blacklist.txt")
-  -c, --cert-path string          set tls cert path (default "cert.pem")
-      --deny-web-page             deny web page requests
-      --disable-color             disable color output
-  -d, --domain-list-path string   set accept domain (default "domainlist.txt")
-  -h, --help                      help for git-proxy
-  -k, --key-path string           set tls key path (default "key.pem")
-  -r, --request-limit int         set request limit by ip, 0 as no limit
-  -p, --running-port int          disable color output (default 30000)
+```bash
+# 基础启动
+./douban-proxy
+
+# 启用缓存
+./douban-proxy --enable-cache
+
+# 自定义端口
+./douban-proxy --running-port 8080
 ```
 
-### URL scheme
+代理URL格式：`http://localhost:30000/豆瓣完整URL`
 
-`https://<your_domain>/<github_request_url>`
+## 主要配置
 
-#### example
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `--running-port` | 30000 | 服务器端口 |
+| `--enable-cache` | false | 启用缓存 |
+| `--cache-max-size` | 100 | 缓存大小（MB） |
+| `--cache-load-percent` | 80 | 启动时加载缓存百分比 |
+| `--bandwidth-limit` | 0 | 带宽限制（MB/s） |
+| `--request-limit` | 0 | 每IP请求限制 |
 
-`https://abc.com/https://github.com/github/docs.git`
+## 编译
 
-## Installation
-
-### Build
-
-#### windows
-
-`git clone https://github.com/PuerNya/git-proxy.git && cd git-proxy && go build -o git-proxy.exe -v -trimpath -ldflags "-s -w" main.go`
-
-#### !windows
-
-`git clone https://github.com/PuerNya/git-proxy.git && cd git-proxy && go build -o git-proxy -v -trimpath -ldflags "-s -w" main.go`
-
-## Features
-
-### Repository blacklist
-
-Block repositories in blacklist.
-
-#### Struct
-
-`<user>/<repo>`
-
-- Wildcard characters `*` `?` are supported
-- Blank user/repo will be parsed as `*`
-```text
-examples:
-
-    `/abcd` => User: "*", Repo: "abcd"
-    `abcd/` => User: "abcd", Repo: "*"
+```bash
+go build -o douban-proxy main.go
 ```
 
-### Accept domain list
+## 项目结构
 
-Accept requests whose url host is in the list.
+```
+douban-proxy/
+├── main.go                    # 主程序
+├── internal/
+│   ├── config/               # 配置管理
+│   ├── cache/                # 缓存系统
+│   ├── handler/              # HTTP处理
+│   ├── middleware/           # 中间件
+│   ├── proxy/                # 代理逻辑
+│   └── stats/                # 统计监控
+└── README.md
+```
 
-#### Default list
+---
 
-- `github.com`
-- `raw.github.com`
-- `raw.githubusercontent.com`
-- `gist.github.com`
-- `objects.githubusercontent.com`
-- `gist.githubusercontent.com`
-- `codeload.github.com`
-- `api.github.com`
-
-## Q&A
-
-### Commit message cannot load
-
-Cause the policy set by Github, you can only fetch it over TLS.
-
-### Release assets cannot load
-
-Cause the CORS policy set by Github, requests will be blocked by browser.
-
-### Nginx 502
-
-Cause response headers given by Github is too large, try to enlarge `proxy_buffer_size`
+*仅用于学习和开发目的，请遵守豆瓣使用协议。*
