@@ -240,13 +240,14 @@ func StopCache() {
 func sendRequestWithURL(w http.ResponseWriter, r *http.Request, URL *url.URL) {
 	ctx := r.Context()
 
-	// 生成缓存键
+	// 生成缓存键并处理请求去重
 	var cacheKey string
+	var shouldFetch bool
 	if cacheManager != nil {
 		cacheKey = cache.GenerateKey(r.Method, URL.String(), r.Header)
 
-		// 检查缓存
-		if cacheItem, found := cacheManager.Get(cacheKey); found {
+		// 使用无锁获取或开始获取
+		if cacheItem, found, shouldStart := cacheManager.GetOrStartFetch(cacheKey); found {
 			stats.Global.IncCacheHit() // 统计缓存命中
 			sizeKB := float64(len(cacheItem.Body)) / 1024
 			requests, hits, _, _, hitRate := stats.Global.GetStats()
@@ -273,13 +274,25 @@ func sendRequestWithURL(w http.ResponseWriter, r *http.Request, URL *url.URL) {
 			w.WriteHeader(cacheItem.StatusCode)
 			w.Write(cacheItem.Body)
 			return
+		} else if shouldStart {
+			// 需要开始新的请求
+			shouldFetch = true
+			stats.Global.IncCacheMiss() // 统计缓存未命中
+			requests, hits, _, _, hitRate := stats.Global.GetStats()
+			// 获取当前缓存状态
+			cacheCount, currentCacheSize, _ := cacheManager.GetStats()
+			log.DebugContext(ctx, "Cache MISS: ", URL, " | Stats: ", requests, " reqs, ", hits, " hits (", fmt.Sprintf("%.1f%%", hitRate), ") | Cache: ", cacheCount, " items, ", fmt.Sprintf("%.1fMB", float64(currentCacheSize)/(1024*1024)))
+		} else {
+			// 有其他请求正在处理相同资源且已完成，但结果为空（可能失败了）
+			stats.Global.IncCacheMiss()
+			requests, hits, _, _, hitRate := stats.Global.GetStats()
+			cacheCount, currentCacheSize, _ := cacheManager.GetStats()
+			log.DebugContext(ctx, "Cache WAIT FAILED: ", URL, " | Stats: ", requests, " reqs, ", hits, " hits (", fmt.Sprintf("%.1f%%", hitRate), ") | Cache: ", cacheCount, " items, ", fmt.Sprintf("%.1fMB", float64(currentCacheSize)/(1024*1024)))
+			// 继续执行请求，但不使用去重机制
+			shouldFetch = false
 		}
-
-		stats.Global.IncCacheMiss() // 统计缓存未命中
-		requests, hits, _, _, hitRate := stats.Global.GetStats()
-		// 获取当前缓存状态
-		cacheCount, currentCacheSize, _ := cacheManager.GetStats()
-		log.DebugContext(ctx, "Cache MISS: ", URL, " | Stats: ", requests, " reqs, ", hits, " hits (", fmt.Sprintf("%.1f%%", hitRate), ") | Cache: ", cacheCount, " items, ", fmt.Sprintf("%.1fMB", float64(currentCacheSize)/(1024*1024)))
+	} else {
+		shouldFetch = false
 	}
 
 	request, err := http.NewRequest(r.Method, URL.String(), r.Body)
@@ -427,24 +440,34 @@ func sendRequestWithURL(w http.ResponseWriter, r *http.Request, URL *url.URL) {
 
 	w.WriteHeader(response.StatusCode)
 
-	// 写入响应体
+	// 写入响应体并处理缓存
 	if cacheManager != nil && shouldCache && responseBody != nil {
 		// 检测缓存类型
 		cacheType := cache.DetectCacheType(response.Header)
 
 		// 使用内存池创建缓存响应条目
 		cacheItem := cache.NewItem()
+		now := time.Now()
 		*cacheItem = cache.Item{
-			StatusCode:   response.StatusCode,
-			Headers:      responseHeaders,
-			Body:         responseBody,
-			Timestamp:    time.Now(),
-			LastAccessed: time.Now(),
-			AccessCount:  1, // 首次创建时访问计数为1
-			Size:         int64(len(responseBody)),
-			CacheType:    cacheType, // 设置缓存类型
+			StatusCode: response.StatusCode,
+			Headers:    responseHeaders,
+			Body:       responseBody,
+			Timestamp:  now,
+			Size:       int64(len(responseBody)),
+			CacheType:  cacheType, // 设置缓存类型
 		}
-		cacheManager.Set(cacheKey, cacheItem)
+		// 使用方法设置访问统计
+		cacheItem.SetLastAccessed(now)
+		cacheItem.SetAccessCount(1) // 首次创建时访问计数为1
+
+		// 如果是通过去重机制开始的请求，使用 CompleteFetch
+		if shouldFetch {
+			cacheManager.CompleteFetch(cacheKey, cacheItem, nil)
+		} else {
+			// 普通请求直接设置缓存
+			cacheManager.Set(cacheKey, cacheItem)
+		}
+
 		stats.Global.AddDataSize(int64(len(responseBody))) // 统计数据大小
 
 		sizeKB := float64(len(responseBody)) / 1024
@@ -456,6 +479,15 @@ func sendRequestWithURL(w http.ResponseWriter, r *http.Request, URL *url.URL) {
 			w.Write(responseBody)
 		}
 	} else {
+		// 如果缓存失败但是通过去重机制开始的请求，需要通知其他等待的请求
+		if cacheManager != nil && shouldFetch {
+			var err error
+			if response.StatusCode != http.StatusOK {
+				err = fmt.Errorf("HTTP %d", response.StatusCode)
+			}
+			cacheManager.CompleteFetch(cacheKey, nil, err)
+		}
+
 		if cacheManager != nil && response.StatusCode != http.StatusOK {
 			log.DebugContext(ctx, "Skip cache status ", response.StatusCode, ": ", URL)
 		}

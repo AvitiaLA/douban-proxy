@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/jellydator/ttlcache/v3"
@@ -44,22 +45,60 @@ const (
 
 // Item 缓存条目
 type Item struct {
-	StatusCode   int
-	Headers      http.Header
-	Body         []byte
-	Timestamp    time.Time // 创建时间
-	LastAccessed time.Time // 最后访问时间
-	AccessCount  int       // 访问次数
-	Size         int64
-	CacheType    CacheType // 缓存类型
+	StatusCode     int
+	Headers        http.Header
+	Body           []byte
+	Timestamp      time.Time // 创建时间
+	lastAccessedNs int64     // 最后访问时间（纳秒时间戳，用于原子操作）
+	accessCount    int32     // 访问次数（用于原子操作）
+	Size           int64
+	CacheType      CacheType // 缓存类型
+}
+
+// GetLastAccessed 获取最后访问时间
+func (item *Item) GetLastAccessed() time.Time {
+	ns := atomic.LoadInt64(&item.lastAccessedNs)
+	if ns == 0 {
+		return item.Timestamp
+	}
+	return time.Unix(0, ns)
+}
+
+// SetLastAccessed 设置最后访问时间
+func (item *Item) SetLastAccessed(t time.Time) {
+	atomic.StoreInt64(&item.lastAccessedNs, t.UnixNano())
+}
+
+// GetAccessCount 获取访问次数
+func (item *Item) GetAccessCount() int {
+	return int(atomic.LoadInt32(&item.accessCount))
+}
+
+// IncAccessCount 增加访问次数
+func (item *Item) IncAccessCount() {
+	atomic.AddInt32(&item.accessCount, 1)
+}
+
+// SetAccessCount 设置访问次数
+func (item *Item) SetAccessCount(count int) {
+	atomic.StoreInt32(&item.accessCount, int32(count))
+}
+
+// InFlightRequest 正在处理的请求信息
+type InFlightRequest struct {
+	doneChan chan struct{}
+	result   *Item
+	err      error
 }
 
 // Manager 缓存管理器
 type Manager struct {
-	cache       *ttlcache.Cache[string, *Item]
-	currentSize int64
-	maxSize     int64
-	mutex       sync.RWMutex
+	cache         *ttlcache.Cache[string, *Item]
+	currentSize   int64
+	maxSize       int64
+	mutex         sync.RWMutex
+	inFlightMutex sync.Mutex                  // 保护 inFlight map
+	inFlight      map[string]*InFlightRequest // 正在进行的请求，防止重复请求
 	// 维护一个按热门度排序的优先队列，避免每次都要全量计算
 	lowScoreKeys []string      // 保存低分数的key，用于快速淘汰
 	logger       L.Logger      // 日志记录器
@@ -76,6 +115,7 @@ func NewManager(maxSizeMB int64, defaultExpiration time.Duration, logger L.Logge
 	cm := &Manager{
 		cache:    cache,
 		maxSize:  maxSizeMB * 1024 * 1024, // 转换为字节
+		inFlight: make(map[string]*InFlightRequest),
 		logger:   logger,
 		stopChan: make(chan struct{}),
 	}
@@ -147,18 +187,71 @@ func (cm *Manager) Get(key string) (*Item, bool) {
 	cacheItem := item.Value()
 	cm.mutex.RUnlock()
 
-	// 异步更新访问统计，避免阻塞读取
+	// 使用原子操作更新访问统计，避免锁竞争
 	go func() {
-		cm.mutex.Lock()
+		cm.mutex.RLock()
 		// 再次检查item是否还存在（可能被其他goroutine删除）
 		if currentItem := cm.cache.Get(key); currentItem != nil && !currentItem.IsExpired() {
-			currentItem.Value().LastAccessed = time.Now()
-			currentItem.Value().AccessCount++
+			cm.mutex.RUnlock()
+			// 使用原子操作更新访问时间和计数
+			currentItem.Value().SetLastAccessed(time.Now())
+			currentItem.Value().IncAccessCount()
+		} else {
+			cm.mutex.RUnlock()
 		}
-		cm.mutex.Unlock()
 	}()
 
 	return cacheItem, true
+}
+
+// GetOrStartFetch 获取缓存项或开始获取过程（去重）
+// 如果缓存不存在且没有正在进行的请求，返回 (nil, false, true) 表示应该开始新的请求
+// 如果缓存存在，返回 (item, true, false)
+// 如果有正在进行的请求，会等待该请求完成，返回 (item, found, false)
+func (cm *Manager) GetOrStartFetch(key string) (*Item, bool, bool) {
+	// 首先尝试从缓存获取
+	if item, found := cm.Get(key); found {
+		return item, true, false
+	}
+
+	// 检查是否有正在进行的请求
+	cm.inFlightMutex.Lock()
+	if inFlightReq, exists := cm.inFlight[key]; exists {
+		// 有正在进行的请求，等待其完成
+		cm.inFlightMutex.Unlock()
+		<-inFlightReq.doneChan
+		if inFlightReq.result != nil && inFlightReq.err == nil {
+			return inFlightReq.result, true, false
+		}
+		return nil, false, false
+	}
+
+	// 没有正在进行的请求，创建一个新的
+	inFlightReq := &InFlightRequest{
+		doneChan: make(chan struct{}),
+	}
+	cm.inFlight[key] = inFlightReq
+	cm.inFlightMutex.Unlock()
+
+	return nil, false, true
+}
+
+// CompleteFetch 完成获取过程并存储结果
+func (cm *Manager) CompleteFetch(key string, item *Item, err error) {
+	cm.inFlightMutex.Lock()
+	inFlightReq, exists := cm.inFlight[key]
+	if exists {
+		inFlightReq.result = item
+		inFlightReq.err = err
+		delete(cm.inFlight, key)
+		close(inFlightReq.doneChan)
+	}
+	cm.inFlightMutex.Unlock()
+
+	// 如果成功获取到数据，存储到缓存
+	if item != nil && err == nil {
+		cm.Set(key, item)
+	}
 }
 
 // Set 设置缓存项
@@ -274,6 +367,16 @@ func (cm *Manager) GetStats() (count int, currentSize, maxSize int64) {
 // Stop 停止缓存管理器
 func (cm *Manager) Stop() {
 	close(cm.stopChan) // 停止定期清理协程
+
+	// 清理所有正在进行的请求
+	cm.inFlightMutex.Lock()
+	for key, req := range cm.inFlight {
+		req.err = fmt.Errorf("cache manager stopped")
+		close(req.doneChan)
+		delete(cm.inFlight, key)
+	}
+	cm.inFlightMutex.Unlock()
+
 	cm.cache.Stop()
 }
 
@@ -339,11 +442,13 @@ func (cm *Manager) SaveToFile(filename string) error {
 func calculateHotScore(item *Item) float64 {
 	now := time.Now()
 
-	// 访问次数权重（越多越热门）
-	accessWeight := float64(item.AccessCount)
+	// 访问次数权重（越多越热门）- 使用方法读取
+	accessWeight := float64(item.GetAccessCount())
 
-	// 最近访问时间权重（越近越热门）
-	hoursSinceLastAccess := now.Sub(item.LastAccessed).Hours()
+	// 最近访问时间权重（越近越热门）- 使用方法读取
+	lastAccessed := item.GetLastAccessed()
+
+	hoursSinceLastAccess := now.Sub(lastAccessed).Hours()
 	recencyWeight := 1.0 / (1.0 + hoursSinceLastAccess/24.0) // 1天后权重减半
 
 	// 缓存年龄权重（避免过老的缓存占用空间）
