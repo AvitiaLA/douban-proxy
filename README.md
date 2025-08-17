@@ -7,53 +7,35 @@
 - **智能缓存**：基于热门度的 LRU 缓存，支持持久化
 - **跨域支持**：自动处理 CORS 头部和预检请求
 - **通配符域名**：支持 `*.douban.com` 和 `*.doubanio.com`
-- **模块化设计**：配置管理、缓存、处理器、中间件分离
 
 ## 快速使用
 
+### 直接运行
+
 ```bash
 # 基础启动
-./douban-proxy
+douban-proxy
+
+# 查看帮助
+douban-proxy -h
 
 # 启用缓存
-./douban-proxy --enable-cache
-
-# 自定义端口
-./douban-proxy --running-port 8080
+douban-proxy --enable-cache
 ```
 
 代理URL格式：`http://localhost:30000/豆瓣完整URL`
 
-## 主要配置
-
-| 参数 | 默认值 | 说明 |
-|------|--------|------|
-| `--running-port` | 30000 | 服务器端口 |
-| `--enable-cache` | false | 启用缓存 |
-| `--cache-max-size` | 100 | 缓存大小（MB） |
-| `--cache-load-percent` | 80 | 启动时加载缓存百分比 |
-| `--bandwidth-limit` | 0 | 带宽限制（MB/s） |
-| `--request-limit` | 0 | 每IP请求限制 |
-
-## 编译
+### 服务模式（推荐）
 
 ```bash
-go build -o douban-proxy main.go
-```
+# 安装系统服务
+douban-proxy service install --enable-cache
 
-## 项目结构
+# 启动服务
+douban-proxy service start
 
-```
-douban-proxy/
-├── main.go                    # 主程序
-├── internal/
-│   ├── config/               # 配置管理
-│   ├── cache/                # 缓存系统
-│   ├── handler/              # HTTP处理
-│   ├── middleware/           # 中间件
-│   ├── proxy/                # 代理逻辑
-│   └── stats/                # 统计监控
-└── README.md
+# 查看服务状态
+douban-proxy service status
 ```
 
 ---
