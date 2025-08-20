@@ -80,16 +80,8 @@ func InitHTTPClient() {
 // InitCache 初始化缓存
 func InitCache() {
 	if config.Global.EnableCache {
-		cacheManager = cache.NewManager(config.Global.CacheMaxSize, 0, log, config.Global.CacheCleanupHours)
-		log.Debug("Cache enabled: ", config.Global.CacheMaxSize, "MB, cleanup interval: ", config.Global.CacheCleanupHours, "h")
-
-		// 尝试从文件加载缓存
-		if err := cacheManager.LoadFromFile(config.Global.CacheFile, config.Global.CacheLoadPercent); err != nil {
-			log.Debug("Cache load failed: ", err)
-		}
-
-		// 加载完成后执行初始清理
-		cacheManager.CleanupAfterLoad()
+		cacheManager = cache.NewManager(config.Global.CacheMemorySize, config.Global.CacheDir, log, config.Global.CacheCleanupHours)
+		log.Debug("Cache enabled: memory=", config.Global.CacheMemorySize, "MB, disk=", config.Global.CacheDir, ", cleanup interval: ", config.Global.CacheCleanupHours, "h")
 	}
 }
 
@@ -220,11 +212,11 @@ func responseWithRedirect(w http.ResponseWriter, r *http.Request, URL *url.URL) 
 // SaveCache 保存缓存
 func SaveCache() error {
 	if cacheManager != nil {
-		if err := cacheManager.SaveToFile(config.Global.CacheFile); err != nil {
+		if err := cacheManager.SaveToFile(""); err != nil {
 			return err
 		}
-		count, currentSize, _ := cacheManager.GetStats()
-		log.Debug("Cache saved: ", count, " items, ", currentSize/(1024*1024), "MB")
+		memCount, memSize, diskCount, diskSize := cacheManager.GetStats()
+		log.Debug("Cache saved: memory=", memCount, " items (", memSize/(1024*1024), "MB), disk=", diskCount, " items (", diskSize/(1024*1024), "MB)")
 	}
 	return nil
 }
@@ -252,7 +244,9 @@ func sendRequestWithURL(w http.ResponseWriter, r *http.Request, URL *url.URL) {
 			sizeKB := float64(len(cacheItem.Body)) / 1024
 			requests, hits, _, _, hitRate := stats.Global.GetStats()
 			// 获取当前缓存状态
-			cacheCount, currentCacheSize, _ := cacheManager.GetStats()
+			memCount, memSize, diskCount, diskSize := cacheManager.GetStats()
+			cacheCount := memCount + diskCount
+			currentCacheSize := memSize + diskSize
 			log.DebugContext(ctx, "Cache HIT: ", URL, " | ", fmt.Sprintf("%.1fKB", sizeKB), " | Stats: ", requests, " reqs, ", hits, " hits (", fmt.Sprintf("%.1f%%", hitRate), ") | Cache: ", cacheCount, " items, ", fmt.Sprintf("%.1fMB", float64(currentCacheSize)/(1024*1024)))
 
 			// 设置响应头（从缓存中恢复）
@@ -280,13 +274,17 @@ func sendRequestWithURL(w http.ResponseWriter, r *http.Request, URL *url.URL) {
 			stats.Global.IncCacheMiss() // 统计缓存未命中
 			requests, hits, _, _, hitRate := stats.Global.GetStats()
 			// 获取当前缓存状态
-			cacheCount, currentCacheSize, _ := cacheManager.GetStats()
+			memCount, memSize, diskCount, diskSize := cacheManager.GetStats()
+			cacheCount := memCount + diskCount
+			currentCacheSize := memSize + diskSize
 			log.DebugContext(ctx, "Cache MISS: ", URL, " | Stats: ", requests, " reqs, ", hits, " hits (", fmt.Sprintf("%.1f%%", hitRate), ") | Cache: ", cacheCount, " items, ", fmt.Sprintf("%.1fMB", float64(currentCacheSize)/(1024*1024)))
 		} else {
 			// 有其他请求正在处理相同资源且已完成，但结果为空（可能失败了）
 			stats.Global.IncCacheMiss()
 			requests, hits, _, _, hitRate := stats.Global.GetStats()
-			cacheCount, currentCacheSize, _ := cacheManager.GetStats()
+			memCount, memSize, diskCount, diskSize := cacheManager.GetStats()
+			cacheCount := memCount + diskCount
+			currentCacheSize := memSize + diskSize
 			log.DebugContext(ctx, "Cache WAIT FAILED: ", URL, " | Stats: ", requests, " reqs, ", hits, " hits (", fmt.Sprintf("%.1f%%", hitRate), ") | Cache: ", cacheCount, " items, ", fmt.Sprintf("%.1fMB", float64(currentCacheSize)/(1024*1024)))
 			// 继续执行请求，但不使用去重机制
 			shouldFetch = false

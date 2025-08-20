@@ -25,10 +25,9 @@ type Config struct {
 	RequestLimit   int
 
 	// 缓存配置
-	CacheMaxSize      int64
-	CacheFile         string
-	CacheLoadPercent  int
-	CacheCleanupHours int // 非长期缓存的清理间隔（小时）
+	CacheMemorySize   int64  // 内存缓存大小（MB）
+	CacheDir          string // 磁盘缓存目录
+	CacheCleanupHours int    // 缓存清理间隔（小时）
 
 	// 域名配置
 	DomainListPath string
@@ -45,10 +44,9 @@ func DefaultConfig() *Config {
 		AddDefaultHeaders: true,
 		BandwidthLimit:    0,
 		RequestLimit:      0,
-		CacheMaxSize:      100,
-		CacheFile:         "cache.gob",
-		CacheLoadPercent:  80,
-		CacheCleanupHours: 12, // 默认12小时清理一次
+		CacheMemorySize:   50,              // 默认50MB内存缓存
+		CacheDir:          "/etc/db-proxy", // 默认缓存目录
+		CacheCleanupHours: 12,              // 默认12小时清理一次
 		DomainListPath:    "domainlist.txt",
 		FaviconDomain:     "www.douban.com",
 	}
@@ -77,11 +75,10 @@ func InitFlags(cmd *cobra.Command) {
 	cmd.PersistentFlags().IntVarP(&Global.BandwidthLimit, "bandwidth-limit", "l", 0, "设置总带宽限制 (MB/s)，0为无限制")
 	cmd.PersistentFlags().IntVarP(&Global.RequestLimit, "request-limit", "r", 0, "设置每IP请求限制，0为无限制")
 	cmd.PersistentFlags().BoolVarP(&Global.EnableCache, "enable-cache", "", false, "启用响应缓存")
-	cmd.PersistentFlags().Int64VarP(&Global.CacheMaxSize, "cache-max-size", "", 100, "最大缓存大小（MB）")
+	cmd.PersistentFlags().Int64VarP(&Global.CacheMemorySize, "cache-memory-size", "", 50, "内存缓存大小（MB）")
+	cmd.PersistentFlags().StringVarP(&Global.CacheDir, "cache-dir", "", "/etc/db-proxy", "磁盘缓存目录")
 	cmd.PersistentFlags().BoolVarP(&Global.AddDefaultHeaders, "add-default-headers", "", true, "添加默认请求头以提高兼容性")
 	cmd.PersistentFlags().BoolVarP(&Global.EnableCORS, "enable-cors", "", true, "启用CORS支持")
 	cmd.PersistentFlags().StringVarP(&Global.FaviconDomain, "favicon-domain", "", "www.douban.com", "favicon请求的域名")
-	cmd.PersistentFlags().StringVarP(&Global.CacheFile, "cache-file", "", "cache.gob", "缓存持久化文件路径")
-	cmd.PersistentFlags().IntVarP(&Global.CacheLoadPercent, "cache-load-percent", "", 80, "启动时加载缓存的百分比")
-	cmd.PersistentFlags().IntVarP(&Global.CacheCleanupHours, "cache-cleanup-hours", "", 12, "非长期缓存的清理间隔（小时）")
+	cmd.PersistentFlags().IntVarP(&Global.CacheCleanupHours, "cache-cleanup-hours", "", 12, "缓存清理间隔（小时）")
 }
