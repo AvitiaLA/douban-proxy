@@ -298,7 +298,6 @@ func (cm *Manager) evictOldest() {
 		cm.lowScoreKeys = cm.lowScoreKeys[:len(cm.lowScoreKeys)-1]
 
 		if item := cm.cache.Get(keyToDelete); item != nil {
-			cm.currentSize -= item.Value().Size
 			cm.cache.Delete(keyToDelete)
 			return
 		}
@@ -317,9 +316,6 @@ func (cm *Manager) evictOldest() {
 	}
 
 	if oldestKey != "" {
-		if item := cm.cache.Get(oldestKey); item != nil {
-			cm.currentSize -= item.Value().Size
-		}
 		cm.cache.Delete(oldestKey)
 	}
 }
@@ -614,23 +610,25 @@ func (cm *Manager) cleanupNonImageCache() {
 
 	var cleanupCount int
 	var cleanupSize int64
+	var keysToDelete []string
 
-	// 直接遍历删除，避免额外的slice分配
 	for key, item := range items {
 		if item.Value().CacheType == CacheTypeOther {
+			keysToDelete = append(keysToDelete, key)
 			cleanupSize += item.Value().Size
-			cm.currentSize -= item.Value().Size
-			cm.cache.Delete(key)
-			cleanupCount++
 		}
+	}
+
+	for _, key := range keysToDelete {
+		cm.cache.Delete(key)
+		cleanupCount++
 	}
 
 	// 记录清理日志
 	if cleanupCount > 0 {
 		cm.logger.Info(fmt.Sprintf("定期清理非图片缓存: 清理了 %d 个条目, 释放了 %.2f MB 空间",
 			cleanupCount, float64(cleanupSize)/(1024*1024)))
-		// 清理lowScoreKeys缓存以确保一致性
-		cm.lowScoreKeys = nil
+		cm.lowScoreKeys = cm.lowScoreKeys[:0]
 	} else {
 		cm.logger.Debug("定期清理非图片缓存: 无需清理的条目")
 	}
