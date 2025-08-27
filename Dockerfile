@@ -10,4 +10,5 @@ FROM alpine:3.20
 WORKDIR /app
 COPY --from=builder /app/douban-proxy .
 EXPOSE 30000
-CMD ["./douban-proxy", "--enable-cache", "--port", "30000"]
+CMD ["sh", "-c", "./douban-proxy --enable-cache"]
+
