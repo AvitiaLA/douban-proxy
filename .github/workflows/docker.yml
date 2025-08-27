@@ -1,10 +1,10 @@
 name: Docker Build and Push to GHCR
 
 on:
-  workflow_dispatch:   # 手动触发
+  workflow_dispatch:
   push:
     tags:
-      - 'v*'           # 推送 tag v1.0.0 这种时触发
+      - 'v*'
 
 jobs:
   docker:
@@ -23,9 +23,13 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Set lowercase owner
+        id: repo
+        run: echo "owner=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_OUTPUT
+
       - name: Build and push
         uses: docker/build-push-action@v5
         with:
           push: true
           platforms: linux/amd64,linux/arm64
-          tags: ghcr.io/${{ github.repository_owner }}/dbdb:latest
+          tags: ghcr.io/${{ steps.repo.outputs.owner }}/dbdb:latest
