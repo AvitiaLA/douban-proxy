@@ -36,8 +36,15 @@ type Config struct {
 
 // DefaultConfig 返回默认配置
 func DefaultConfig() *Config {
+	port := 30000 // 默认端口
+	if envPort := os.Getenv("PORT"); envPort != "" {
+		if p, err := strconv.Atoi(envPort); err == nil {
+			port = p
+		}
+	}
+
 	return &Config{
-		RunningPort:       30000,
+		RunningPort:       port,   // 使用环境变量 PORT 或默认值
 		DisableColor:      false,
 		EnableCache:       false,
 		EnableCORS:        true,
